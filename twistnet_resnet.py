@@ -24,30 +24,15 @@ from mmpretrain.models.builder import BACKBONES
 from mmpretrain.models.backbones.resnet import BasicBlock, Bottleneck, ResLayer
 
 from mmpretrain.models.utils.make_divisible import make_divisible
-#BN是单卡，SyncBN是多卡同步BN
 
 
 class Fusion_Block(nn.Module):
     def __init__(self):
         super(Fusion_Block, self).__init__()
     def forward(self, T1_weight , T2_weight):
-        # 将T1_weight , T2_weight复制三份(16, 1, 13, 256, 256)->(16, 3, 13, 256, 256)
-        T1_weight = T1_weight.repeat(1, 3, 1, 1, 1)
-        T2_weight = T2_weight.repeat(1, 3 ,1, 1, 1)
-        #print(T1_weight.shape , T2_weight.shape)
-        #T1_weight , T2_weight按通道拼接成(16, 6, 13, 256, 256)
-
         fused_3d= torch.cat([T1_weight, T2_weight], dim=1)
-        #沿深度方向切割成2D数据(16, 6, 13, 256, 256)->切片成一个包含13个形状为（16, 6, 256, 256）的2D张量列表。
-
         fused_2d = fused_3d.unbind(dim=2)#list中有13个(16,6,256,256)的tensor
         outs = [fused_2d, fused_3d]
-
-        # list_2d = fused_3d.unbind(dim=2)# 在深度维度（第3个维度）进行切割->list中有13个(16,6,256,256)的tensor
-        # # 将这些张量按第一维度拼接成一个形状为（208, 6, 256, 256）的4D张量，208=16*13
-        # fused_2d = torch.cat(list_2d, dim=0)
-        # outs = [fused_2d, fused_3d]
-
         return outs
 
 class M_Module(BaseModule):
@@ -261,7 +246,6 @@ class CT_Module(BaseModule):
                     order=order)
 
     def forward(self, x):
-        """Forward function."""
         if self.compress_ratio == 1:
             if self.in_channels < self.out_channels:
                 out = self.expand_conv(x)
@@ -424,17 +408,7 @@ class BT_Block(BaseModule):
 
         self.bt_mode = bt_mode
         self.with_cp = with_cp
-
-        #resize module
-        #如果(N2D, H2D, W2D)≠(D3D, H3D, W3D)三线性插值
-        # batch_size, channels0, original_depth0, height0, width0 = x_slave.shape
-        # batch_size, channels1, original_depth1, height1, width1 = x_master.shape
-        # x_slave2m = nn.functional.interpolate(x_slave, size=(original_depth1,height1,width1), mode='trilinear', align_corners=False)
-        # x_master2s = nn.functional.interpolate(x_master, size=(original_depth0,height0,width0), mode='trilinear', align_corners=False)
         self.resize_convs = nn.Identity()
-        #否则直接输出  nn.Identity()
-        #mix module
-        #conv(3,1,1)
         self.mix_conv = \
             ConvModule(
                 slave_out_channels,
@@ -444,7 +418,6 @@ class BT_Block(BaseModule):
                 conv_cfg = conv_cfg,
                 act_cfg = act_cfg,
                 order = order)
-        #BG模块中的 T Block也就是unify conv需要改,而且要弄懂为啥是一个1x1的深度可分离卷积
         if bt_mode == "dual_mul" or bt_mode == "dual_add":
             self.s2m_conv = \
                 CT_Module(
@@ -464,7 +437,6 @@ class BT_Block(BaseModule):
                     norm_cfg=norm_cfg,
                     act_cfg=act_cfg,
                     order=order)
-#最佳 性能双向加乘
         elif bt_mode == "dual_add_mul":
             self.s2m_conv = \
                 CT_Module(
@@ -724,11 +696,8 @@ class BT_Block(BaseModule):
             x_slave = torch.cat(x_slave_reshaped, dim=2)
             batch_size, channels0, original_depth0, height0, width0 = x_slave.shape
             batch_size, channels1, original_depth1, height1, width1 = x_master.shape
-            # Resize Module三线性插值
-            #x_slave2m
             x_slave = nn.functional.interpolate(x_slave, size=(original_depth1, height1, width1),
                                                         mode='trilinear', align_corners=False)
-            # x_master2s
             x_master = nn.functional.interpolate(x_master, size=(original_depth0, height0, width0),
                                                          mode='trilinear', align_corners=False)
             if self.bt_mode == "dual_mul" or self.bt_mode == "dual_add":
@@ -746,7 +715,7 @@ class BT_Block(BaseModule):
                     out_slave = x_slave * out_slave
                 else:
                     out_slave = x_slave + out_slave
-                out_slave = out_slave.unbind(dim=2)  # 在深度维度（第3个维度）进行切割->list中有13个tensor
+                out_slave = out_slave.unbind(dim=2) 
                 results = [out_slave, out_master]
 
             elif self.bt_mode == "dual_add_mul":
@@ -757,7 +726,7 @@ class BT_Block(BaseModule):
                 out_slave = self.m2s_conv(x_master)
                 out_slave = self.drop_path(out_slave)
                 out_slave = x_slave * out_slave
-                out_slave = out_slave.unbind(dim=2)  # 在深度维度（第3个维度）进行切割->list中有13个tensor
+                out_slave = out_slave.unbind(dim=2) 
                 results = [out_slave, out_master]
 
             elif self.bt_mode == "s2m_mul" or self.bt_mode == "s2m_add":
@@ -769,7 +738,7 @@ class BT_Block(BaseModule):
                 out_master = self.drop_path(out_master)
 
                 out_slave = self.drop_path(x_slave)
-                out_slave = out_slave.unbind(dim=2)  # 在深度维度（第3个维度）进行切割->list中有13个tensor
+                out_slave = out_slave.unbind(dim=2)  
 
                 results = [out_slave, out_master]
 
@@ -780,7 +749,7 @@ class BT_Block(BaseModule):
                 else:
                     out_slave = x_slave + out_slave
                 out_slave = self.drop_path(out_slave)
-                out_slave = out_slave.unbind(dim=2)  # 在深度维度（第3个维度）进行切割->list中有13个tensor
+                out_slave = out_slave.unbind(dim=2) 
 
                 out_master = self.drop_path(x_master)
 
